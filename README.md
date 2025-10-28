@@ -9,8 +9,8 @@
 
 | 브랜치           | 작업 내용                   |
 | --------------- | ----------------------- |
-| `data-prep`     | 전처리 코드, EDA             |
+| `preproc`     | 데이터 전처리             |
 | `model-cf`      | Collaborative Filtering |
 | `model-cbf`     | Content-based Filtering |
 | `visualization` | 평가 결과 및 시각화             |
-| `main`          | 병합 및 제출용 정리             |
+| `main`          | 병합 및 정리             |
