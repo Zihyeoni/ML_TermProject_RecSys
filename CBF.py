@@ -1,13 +1,17 @@
-# Content-Based Filtering with Explainability
+# Content-Based Filtering with Explainability + Train/Test Split Evaluation
+# -------------------------------------------------------------
 # - Uses preprocessed_data.csv (columns: user_id, recipe_id, rating, name, text)
 # - Deduplicates recipes before TF-IDF
-# - Provides explainable output showing key overlapping terms
-# - Supports both existing and new users + visualization + simple evaluation
+# - Provides explainable output showing top overlapping terms
+# - Supports both existing and new users
+# - Includes user-level train/test split for fair evaluation
+# -------------------------------------------------------------
 
 import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
 from wordcloud import WordCloud
 import argparse
@@ -75,25 +79,21 @@ def recommend_by_selection(favorite_ids, top_n=5):
     profile = _to_profile_from_indices(liked_idx)
     return recommend_from_vector(profile, top_n=top_n, exclude_recipe_ids=favorite_ids)
 
-# 4️ Explainability: Why this recipe?
+# 4️ Explainability
 def explain_recommendation(user_profile, rec_idx, top_terms=5):
     """Find overlapping important terms between user profile and recipe"""
     feature_names = tfidf.get_feature_names_out()
 
-    # User’s top terms
     user_vec = np.array(user_profile).flatten()
     user_top_idx = user_vec.argsort()[::-1][:50]
 
-    # Recipe’s top terms
     recipe_vec = tfidf_matrix[rec_idx].toarray().flatten()
     recipe_top_idx = recipe_vec.argsort()[::-1][:50]
 
-    # Find intersection
     common_idx = list(set(user_top_idx) & set(recipe_top_idx))
     if not common_idx:
         return []
 
-    # Rank by combined importance
     sorted_common = sorted(common_idx, key=lambda i: user_vec[i] + recipe_vec[i], reverse=True)
     top_common = [feature_names[i] for i in sorted_common[:top_terms]]
     return top_common
@@ -105,7 +105,6 @@ def visualize_recommendations(rec_df):
         print("⚠️ No recommendations to visualize.")
         return
 
-    # WordCloud of recommended recipes
     text = " ".join(recipes[recipes["recipe_id"].isin(rec_df["recipe_id"])]["text"].astype(str))
     wordcloud = WordCloud(width=800, height=400, background_color="white").generate(text)
     plt.figure(figsize=(12, 6))
@@ -114,7 +113,6 @@ def visualize_recommendations(rec_df):
     plt.title("Keywords in Recommended Recipes", fontsize=18)
     plt.show()
 
-    # TF-IDF top terms of first recipe
     first_id = rec_df.iloc[0]["recipe_id"]
     ridx = recipes[recipes["recipe_id"] == first_id].index[0]
     feature_names = tfidf.get_feature_names_out()
@@ -129,9 +127,61 @@ def visualize_recommendations(rec_df):
     plt.tight_layout()
     plt.show()
 
-# 6️ Interactive CLI
+# 6️ Train/Test Split Evaluation
+def split_train_test(df, test_size=0.2, seed=42):
+    """Split each user's ratings into train/test sets"""
+    train_rows, test_rows = [], []
+    for uid, group in df.groupby("user_id"):
+        if len(group) < 2:
+            train_rows.append(group)
+            continue
+        train, test = train_test_split(group, test_size=test_size, random_state=seed)
+        train_rows.append(train)
+        test_rows.append(test)
+    return pd.concat(train_rows), pd.concat(test_rows)
+
+def evaluate_hit_rate_at_k_split(k=5, test_size=0.2, seed=42):
+    """Evaluate Hit@K using per-user train/test split"""
+    train_df, test_df = split_train_test(df, test_size=test_size, seed=seed)
+    users = test_df["user_id"].unique()
+
+    hits, evaluated = 0, 0
+
+    for uid in users:
+        train_user = train_df[train_df["user_id"] == uid]
+        test_user = test_df[test_df["user_id"] == uid]
+
+        liked_train = train_user[train_user["rating"] >= 4]["recipe_id"].tolist()
+        liked_test = test_user[test_user["rating"] >= 4]["recipe_id"].tolist()
+        if len(liked_train) == 0 or len(liked_test) == 0:
+            continue
+
+        idx = recipes[recipes["recipe_id"].isin(liked_train)].index.values
+        profile = _to_profile_from_indices(idx)
+
+        rec_df = recommend_from_vector(profile, top_n=k, exclude_recipe_ids=liked_train)
+        rec_list = rec_df["recipe_id"].tolist()
+
+        if any(r in rec_list for r in liked_test):
+            hits += 1
+        evaluated += 1
+
+    hit_rate = hits / evaluated if evaluated > 0 else 0
+    print(f"[Split Eval] Hit@{k}: {hit_rate:.3f} (users evaluated: {evaluated})")
+    return hit_rate
+
+# 7️ Interactive CLI
 def main():
-    print("✨ Recipe Recommendation System (Preprocessed, Explainable) ✨")
+    parser = argparse.ArgumentParser(description="Explainable CBF with Train/Test Split")
+    parser.add_argument("--mode", type=str, default="run", help="run | eval")
+    parser.add_argument("--k", type=int, default=5, help="Top-K recommendations")
+    args = parser.parse_args()
+
+    if args.mode == "eval":
+        evaluate_hit_rate_at_k_split(k=args.k)
+        return
+
+    print("✨ Recipe Recommendation System (Preprocessed, Explainable + Split) ✨")
     mode = input("Type 'user' for existing user, or 'new' for a new user: ").strip().lower()
 
     if mode == "user":
@@ -168,7 +218,6 @@ def main():
             sel_df = recommend_by_selection(favorite_ids)
             print(sel_df)
             visualize_recommendations(sel_df)
-
     else:
         print("⚠️ Invalid input. Showing popular recipes.")
         pop_df = recommend_popular()
