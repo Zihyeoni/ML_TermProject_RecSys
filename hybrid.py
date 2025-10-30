@@ -38,10 +38,17 @@ recipes_full_df["recipe_id"] = recipes_full_df["recipe_id"].astype(str)
 alpha = 0.6  # weight for CBF
 df = cbf_df.merge(cf_df, on=["user_id", "recipe_id"], how="inner")
 df = df.merge(ratings_df, on=["user_id", "recipe_id"], how="inner")
-
 df = df.merge(recipes_full_df, on="recipe_id", how="left")
 
-df["hybrid_score"] = alpha * df["cbf_score"] + (1 - alpha) * df["pred_rating"]
+# 💡NORMALIZE CF SCORE (pred_rating) to [0, 1]
+MIN_RATING = 1
+MAX_RATING = 5
+RANGE = MAX_RATING - MIN_RATING
+# Min-Max Normalization Formula: (X - Min) / (Max - Min)
+df["cf_normalized_score"] = (df["pred_rating"] - MIN_RATING) / RANGE
+
+df["hybrid_score"] = alpha * df["cbf_score"] + (1 - alpha) * df["cf_normalized_score"]
+
 
 # -------------------------------
 # ⃣ Train/Test Split
