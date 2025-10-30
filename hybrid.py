@@ -155,8 +155,8 @@ def evaluate_hit_rate_at_k_hybrid(k=5, test_size=0.2, seed=42, alpha=0.6):
     print(f"[Hybrid Hit@{k}] {hit_rate:.3f} (users evaluated: {evaluated})")
     return hit_rate
 
-# 8️⃣ CLI Interactive
-# -------------------------------
+#  CLI Interactive
+
 def main():
     parser = argparse.ArgumentParser(description="Hybrid CBF + CF Recommendation System")
     parser.add_argument("--mode", type=str, default="run", help="run | eval")
