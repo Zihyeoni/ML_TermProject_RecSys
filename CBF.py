@@ -175,10 +175,41 @@ def main():
     parser = argparse.ArgumentParser(description="Explainable CBF with Train/Test Split")
     parser.add_argument("--mode", type=str, default="run", help="run | eval")
     parser.add_argument("--k", type=int, default=5, help="Top-K recommendations")
+    #export_all
+    parser.add_argument("--export_all", action="store_true", help="Export CBF scores for all users")
+    #export_top
+    parser.add_argument("--export_top", type=int, default=None, help="Top-N CBF scores to export per user")
     args = parser.parse_args()
 
     if args.mode == "eval":
         evaluate_hit_rate_at_k_split(k=args.k)
+        return
+
+    if args.export_all:
+        # Export CBF scores for all users
+        # python CBF.py --export_all
+        # python CBF.py --export_all --export_top 10
+        output_file = "cbf_scores1.csv"
+        all_users = df["user_id"].unique()
+        output = []
+        for uid in all_users:
+            profile = get_user_profile(uid)
+            if profile is None:
+                continue
+            scores = cosine_similarity(profile, tfidf_matrix).flatten()
+
+            if args.export_top:
+                top_idx = scores.argsort()[::-1][:args.export_top]
+            else:
+                top_idx = range(len(scores))
+            for ridx in top_idx:
+                output.append({
+                    "user_id": uid,
+                    "recipe_id": recipes.iloc[ridx]["recipe_id"],
+                    "cbf_score": scores[ridx]
+                })
+        pd.DataFrame(output).to_csv(output_file, index=False)
+        print(f"✅ CBF scores exported to {output_file}")
         return
 
     print("✨ Recipe Recommendation System (Preprocessed, Explainable + Split) ✨")
