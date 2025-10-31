@@ -80,7 +80,6 @@ hit10 = hit_rate_at_k(test_df, k=10)
 # Generate Top-N Recommendations for All Users
 # -------------------------------
 top_n = 10
-# 💡 ĐÃ SỬA: Giữ lại cột 'name'
 cols_to_keep = ["user_id", "recipe_id", "name", "hybrid_score"]
 top_df = df.groupby("user_id").apply(lambda x: x.nlargest(top_n, "hybrid_score")).reset_index(drop=True)
 top_df = top_df[cols_to_keep]  # Lấy thêm cột name
@@ -112,5 +111,7 @@ while True:
         plt.title(f"Top-{top_n} Hybrid Recommendations for User {user_id}")
         plt.xticks(rotation=45)
         plt.tight_layout()
-        plt.show()
+        plt.show(block=False)
+        plt.pause(2)  # 2s
+        plt.close()
         print()
