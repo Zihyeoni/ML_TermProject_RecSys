@@ -189,7 +189,7 @@ def main():
         # Export CBF scores for all users
         # python CBF.py --export_all
         # python CBF.py --export_all --export_top 10
-        output_file = "cbf_scores1.csv"
+        output_file = "cbf_scores.csv"
         all_users = df["user_id"].unique()
         output = []
         for uid in all_users:
