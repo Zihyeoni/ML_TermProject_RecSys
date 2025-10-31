@@ -1,8 +1,58 @@
-# ===== Save train/test split (For sharing) =====
+# --------------------------------------
+# Recommendation System
+# TASTEMATE - Personalized Food Recommendation System
+# --------------------------------------
 
-import pandas as pd
+# ========== 1. Preprocessing ==========
+
+import ast
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
+
+# Select only necessary columns
+r_cols = ["id", "name", "ingredients", "tags"]
+i_cols = ["user_id", "recipe_id", "rating"]
+
+recipes = pd.read_csv("RAW_recipes.csv", usecols=r_cols)
+interactions = pd.read_csv("RAW_interactions.csv", usecols=i_cols)
+
+# Handle missing values
+interactions = interactions.dropna().copy()
+interactions["rating"] = interactions["rating"].clip(1 ,5).astype(float)
+
+# Convert stringified lists(string) to lists
+def safe_list(s):
+    if pd.isna(s): return []
+    try:
+        v = ast.literal_eval(str(s))
+        return v if isinstance(v, list) else []
+    except Exception:
+        return []
+
+# list -> Text (For CBF; TF-IDF)
+def join_tokens(lst):
+    return " ".join([str(x).replace(" ", "_") for x in lst])
+
+recipes["ingredients_list"] = recipes["ingredients"].apply(safe_list)
+recipes["tags_list"] = recipes["tags"].apply(safe_list)
+recipes["text"] = (recipes["ingredients_list"].apply(join_tokens) + " " +
+                   recipes["tags_list"].apply(join_tokens)).str.strip()
+
+items = recipes.rename(columns={"id": "recipe_id"})[["recipe_id", "name", "text"]]
+
+# Reduce dataset size (actual interactions remain)
+top_users = interactions["user_id"].value_counts().nlargest(2000).index  # 사용자 2000명
+top_items = interactions["recipe_id"].value_counts().nlargest(2000).index  # 아이템 2000개
+inter_small = interactions[interactions["user_id"].isin(top_users) & interactions["recipe_id"].isin(top_items)].copy()
+
+# Merge items & interactions
+df = inter_small.merge(items, on="recipe_id", how="inner")
+df.to_csv("preprocessed_data.csv", index=False)
+print("Saved: preprocessed_data.csv")
+
+# ======== 2. Save train/test split (For sharing) ========
+
 from sklearn.model_selection import train_test_split
 
 # Load preprocessed data
@@ -23,7 +73,7 @@ test_df.to_csv("test_data.csv", index=False)
 
 print("Saved: train_data.csv, test_data.csv")
 
-# ========== CF (SVD) ==========
+# ============= 3. CF (SVD) =============
 
 from surprise import SVD, Dataset, Reader
 from sklearn.preprocessing import MinMaxScaler
@@ -66,7 +116,7 @@ cf_df["cf_normalized_score"] = scaler.fit_transform(cf_df[["cf_pred"]])
 cf_df.to_csv("cf_scores.csv", index=False)
 print("Saved: cf_scores.csv")
 
-# ========== CBF (TF-IDF + Cosine Similarity) ==========
+# ========== 4. CBF (TF-IDF + Cosine Similarity) ==========
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -124,7 +174,7 @@ cbf_df["cbf_score"] = cbf_df["cbf_score"].clip(0, 1)
 cbf_df.to_csv("cbf_scores.csv", index=False)
 print("Saved: cbf_scores.csv")
 
-# ========== CF + CBF (Hybrid) ==========
+# ============= 5. CF + CBF (Hybrid) =============
 
 # Load CBF & CF data
 cbf_df = pd.read_csv("cbf_scores.csv")
@@ -187,7 +237,7 @@ while True:
         plt.close()
         print()
 
-# ========== Evaluate Hybrid model ==========
+# ============= 6. Evaluate Hybrid model =============
 
 # Load Hybrid data
 pred_df = pd.read_csv("hybrid_scores.csv")
