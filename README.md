@@ -12,5 +12,6 @@
 | `preproc`     | 데이터 전처리             |
 | `model-cf`      | Collaborative Filtering |
 | `model-cbf`     | Content-based Filtering |
+| `hybrid-model`     | CF + CBF 결합 |
 | `visualization` | 평가 결과 및 시각화             |
 | `main`          | 병합 및 정리             |
