@@ -8,7 +8,6 @@
 import ast
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 # Select only necessary columns
 r_cols = ["id", "name", "ingredients", "tags"]
@@ -42,14 +41,31 @@ recipes["text"] = (recipes["ingredients_list"].apply(join_tokens) + " " +
 items = recipes.rename(columns={"id": "recipe_id"})[["recipe_id", "name", "text"]]
 
 # Reduce dataset size (actual interactions remain)
-top_users = interactions["user_id"].value_counts().nlargest(2000).index  # 사용자 2000명
-top_items = interactions["recipe_id"].value_counts().nlargest(2000).index  # 아이템 2000개
+top_users = interactions["user_id"].value_counts().nlargest(2000).index  # Users 2,000
+top_items = interactions["recipe_id"].value_counts().nlargest(2000).index  # Items 2,000
 inter_small = interactions[interactions["user_id"].isin(top_users) & interactions["recipe_id"].isin(top_items)].copy()
 
 # Merge items & interactions
 df = inter_small.merge(items, on="recipe_id", how="inner")
+
+# Filter users & items with enough interactions
+min_user_ratings = 5
+min_item_ratings = 5
+
+user_counts = df["user_id"].value_counts()
+item_counts = df["recipe_id"].value_counts()
+
+df = df[
+    df["user_id"].isin(user_counts[user_counts >= min_user_ratings].index)
+    & df["recipe_id"].isin(item_counts[item_counts >= min_item_ratings].index)
+].copy()
+
+# Sort for stability
+df = df.sort_values(["user_id", "recipe_id"]).reset_index(drop=True)
+
 df.to_csv("preprocessed_data.csv", index=False)
-print("Saved: preprocessed_data.csv")
+print("Saved: preprocessed_data.csv\n")
+print(df)
 
 # ======== 2. Save train/test split (For sharing) ========
 
@@ -75,8 +91,10 @@ print("Saved: train_data.csv, test_data.csv")
 
 # ============= 3. CF (SVD) =============
 
+import pandas as pd
 from surprise import SVD, Dataset, Reader
 from sklearn.preprocessing import MinMaxScaler
+from surprise.model_selection import GridSearchCV
 
 # Load train/test data
 train_df = pd.read_csv("train_data.csv")
@@ -87,8 +105,20 @@ reader = Reader(rating_scale=(1, 5))
 data = Dataset.load_from_df(train_df[["user_id", "recipe_id", "rating"]], reader)
 trainset = data.build_full_trainset()
 
+# Select best parameters
+param_grid = {
+    'n_factors': [50, 100, 150],
+    'reg_all': [0.01, 0.02, 0.05],
+    'lr_all': [0.003, 0.005, 0.007]
+}
+
+gs = GridSearchCV(SVD, param_grid, measures=['rmse', 'mae'], cv=3)
+gs.fit(data)
+
+print(gs.best_params['rmse'])
+
 # Train SVD
-model = SVD(n_factors=100, reg_all=0.02)
+model = SVD(n_factors=50, reg_all=0.05, lr_all=0.003, random_state=42)
 model.fit(trainset)
 
 # Unseen items prediction
@@ -118,6 +148,8 @@ print("Saved: cf_scores.csv")
 
 # ========== 4. CBF (TF-IDF + Cosine Similarity) ==========
 
+import numpy as np
+import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -176,6 +208,8 @@ print("Saved: cbf_scores.csv")
 
 # ============= 5. CF + CBF (Hybrid) =============
 
+import matplotlib.pyplot as plt
+
 # Load CBF & CF data
 cbf_df = pd.read_csv("cbf_scores.csv")
 cf_df = pd.read_csv("cf_scores.csv")
@@ -192,23 +226,75 @@ merged_df = cbf_df.merge(cf_df, on=["user_id", "recipe_id"], how="outer")
 merged_df["cbf_score"] = merged_df["cbf_score"].fillna(0)
 merged_df["cf_normalized_score"] = merged_df["cf_normalized_score"].fillna(0)
 
-# Calculate hybrid score (alpha = 0.6)
-alpha = 0.6
-merged_df["hybrid_score"] = alpha * merged_df["cbf_score"] + (1 - alpha) * merged_df["cf_normalized_score"]
+# HitRate@K (Evaluation)
+def hit_rate_at_k(merged_df, test_df, k):
+    hits, evaluated = 0, 0
+    for uid in test_df["user_id"].unique():
+        liked = test_df[(test_df["user_id"] == uid) & (test_df["rating"] >= 4)]["recipe_id"].tolist()
+        if not liked:
+            continue
+        pred_items = merged_df[merged_df["user_id"] == uid].nlargest(k, "hybrid_score")["recipe_id"].tolist()
+        evaluated += 1
+        if any(item in pred_items for item in liked):
+            hits += 1
+    return hits / evaluated if evaluated > 0 else 0
 
-# Top-N Recommendations for Users
+# Alpha Tuning
+alphas = [0.2, 0.4, 0.6, 0.8]
+results = []
+
+print("Running alpha tuning...")
+for a in alphas:
+    temp_df = merged_df.copy()
+    temp_df["hybrid_score"] = a * temp_df["cbf_score"] + (1 - a) * temp_df["cf_normalized_score"]
+    
+    # Sort and pick Top-N
+    top_n = 10
+    temp_df = temp_df.sort_values(["user_id", "hybrid_score"], ascending=[True, False])
+    top_df = temp_df.groupby("user_id").head(top_n).reset_index(drop=True)
+
+    # Evaluate Hit@5 and Hit@10
+    hit5 = hit_rate_at_k(top_df, test_df, k=5)
+    hit10 = hit_rate_at_k(top_df, test_df, k=10)
+    results.append((a, hit5, hit10))
+    print(f"alpha={a:.1f} → Hit@5={hit5:.4f}, Hit@10={hit10:.4f}")
+
+# Save results
+alpha_results = pd.DataFrame(results, columns=["alpha", "Hit@5", "Hit@10"])
+alpha_results.to_csv("alpha_tuning_results.csv", index=False)
+
+print("\nAlpha tuning completed. Saved: alpha_tuning_results.csv")
+
+# Find Best Alpha
+best_row = alpha_results.loc[alpha_results["Hit@10"].idxmax()]
+best_alpha = best_row["alpha"]
+print(f"\nBest alpha: {best_alpha:.2f} (Hit@10 = {best_row['Hit@10']:.4f})")
+
+# Save final Top-N hybrid results
 top_n = 10
+merged_df["hybrid_score"] = best_alpha * merged_df["cbf_score"] + (1 - best_alpha) * merged_df["cf_normalized_score"]
 merged_df = merged_df.sort_values(["user_id", "hybrid_score"], ascending=[True, False])
 top_df = merged_df.groupby("user_id").head(top_n).reset_index(drop=True)
-
-# recipe name join
 top_df = top_df.merge(test_df[["recipe_id", "name"]].drop_duplicates(), on="recipe_id", how="left")
 
-# Save Top-N Hybrid scores data
 top_df.to_csv("hybrid_scores.csv", index=False)
-print(f"Saved: hybrid_scores.csv (Top-{top_n}, alpha = {alpha})\n")
+print(f"Saved hybrid_scores.csv (alpha = {best_alpha})")
 
-#  User Input and Visualization
+# Visualization
+plt.figure(figsize=(8, 5))
+plt.plot(alpha_results["alpha"], alpha_results["Hit@5"], marker="o", label="Hit@5")
+plt.plot(alpha_results["alpha"], alpha_results["Hit@10"], marker="o", label="Hit@10")
+plt.title("Hybrid Model Performance by Alpha")
+plt.xlabel("Alpha (CBF weight)")
+plt.ylabel("Hit Rate")
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show(block=False)
+plt.pause(3)
+plt.close()
+
+#  ======= Recommendation : User Input and Visualization =======
 while True:
     user_id = input("Enter user_id to view recommendations (or 'exit' to quit): ").strip()
     if user_id.lower() == "exit":
@@ -219,7 +305,7 @@ while True:
 
     if user_rec.empty:
         print(f"⚠️ No recommendations found for user {user_id}. Try another ID.\n")
-        print("💡 Example user_ids:", top_df["user_id"].drop_duplicates().sample(5, random_state=42).to_list())
+        print("💡 Example user_ids:", top_df["user_id"].drop_duplicates().sample(5).to_list())
     else:
         print(f"\n🍽️ Top-{top_n} Hybrid Recommendations for User {user_id}:")
         print(user_rec[["recipe_id", "name", "hybrid_score"]].to_string(index=False))
@@ -291,14 +377,14 @@ def ndcg_at_k(pred_df, test_df, k):
         ndcgs.append(dcg / idcg if idcg > 0 else 0)
     return np.mean(ndcgs) if ndcgs else np.nan
 
-# HitRate@K
-def hit_rate_at_k(pred_df, test_df, k):
+# HitRate@K (Evaluation)
+def hit_rate_at_k(merged_df, test_df, k):
     hits, evaluated = 0, 0
     for uid in test_df["user_id"].unique():
         liked = test_df[(test_df["user_id"] == uid) & (test_df["rating_true"] >= 4)]["recipe_id"].tolist()
         if not liked:
             continue
-        pred_items = pred_df[pred_df["user_id"] == uid].nlargest(k, "rating_pred")["recipe_id"].tolist()
+        pred_items = merged_df[merged_df["user_id"] == uid].nlargest(k, "rating_pred")["recipe_id"].tolist()
         evaluated += 1
         if any(item in pred_items for item in liked):
             hits += 1
@@ -306,7 +392,7 @@ def hit_rate_at_k(pred_df, test_df, k):
 
 # Evaluate across different K values
 metrics = []
-for k in [5, 10]:
+for k in [5, 10, 20, 50]:
     prec = precision_at_k(pred_df, test_df, k)
     rec = recall_at_k(pred_df, test_df, k)
     ndcg = ndcg_at_k(pred_df, test_df, k)
@@ -314,7 +400,7 @@ for k in [5, 10]:
     metrics.append((k, prec, rec, ndcg, hit))
 
 eval_df = pd.DataFrame(metrics, columns=["K", "Precision", "Recall", "nDCG", "HitRate"])
-print("\nRanking-based Evaluation Results: \n", eval_df.round(4))
+print("Ranking-based Evaluation Results: \n", eval_df.round(4))
 
 # Save results
 eval_df.to_csv("evaluation_ranking.csv", index=False)
@@ -329,31 +415,6 @@ for col in ["Precision", "Recall", "nDCG", "HitRate"]:
 plt.xlabel("K (Top-N)")
 plt.ylabel("Score")
 plt.title("Hybrid Model Performance (Ranking-based)")
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
-plt.show()
-
-# == Tuning alpha ==
-alphas = [0.2, 0.4, 0.6, 0.8]
-results = [] 
-
-for alpha in alphas: 
-  pred_df["rating_pred"] = alpha * pred_df["cbf_score"] + (1-alpha) * pred_df["cf_normalized_score"]
-  hit5 = hit_rate_at_k(pred_df, test_df, k=5)
-  hit10 = hit_rate_at_k(pred_df, test_df, k=10)
-  results.append((alpha, hit5, hit10))
-
-alpha_hit = pd.DataFrame(results, columns=["alpha", "Hit@5", "Hit@10"])
-print("\nHit Rate by alpha: \n", alpha_hit)
-
-# Visualization
-plt.figure(figsize=(8, 5))
-plt.plot(alpha_hit["alpha"], alpha_hit["Hit@5"], marker="o", label="Hit@5")
-plt.plot(alpha_hit["alpha"], alpha_hit["Hit@10"], marker="o", label="Hit@10")
-plt.xlabel("Hybrid Weight (α)")
-plt.ylabel("Hit Rate")
-plt.title("Hybrid Recommendation Performance by α")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
