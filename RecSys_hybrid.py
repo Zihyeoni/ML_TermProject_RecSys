@@ -53,7 +53,7 @@ while True:
 
     if user_rec.empty:
         print(f"⚠️ No recommendations found for user {user_id}. Try another ID.\n")
-        print("💡 Example user_ids:", top_df["user_id"].drop_duplicates().sample(5, random_state=42).to_list())
+        print("💡 Example user_ids:", top_df["user_id"].drop_duplicates().sample(5).to_list())
     else:
         print(f"\n🍽️ Top-{top_n} Hybrid Recommendations for User {user_id}:")
         print(user_rec[["recipe_id", "name", "hybrid_score"]].to_string(index=False))
