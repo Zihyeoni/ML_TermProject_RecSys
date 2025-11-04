@@ -17,69 +17,60 @@ for d in [pred_df, test_df]:
 pred_df = pred_df.rename(columns={"hybrid_score": "rating_pred"})
 test_df = test_df.rename(columns={"rating": "rating_true"})
 
-# == Ranking-based Metrics (Precision, Recall, nDCG, Hit) ==
-# Precision@K
-def precision_at_k(pred_df, test_df, k):
-    precisions = []
-    for uid in test_df["user_id"].unique():
-        liked = test_df[(test_df["user_id"] == uid) & (test_df["rating_true"] >= 4)]["recipe_id"].tolist()
-        if not liked:
-            continue
-        pred_items = pred_df[pred_df["user_id"] == uid].nlargest(k, "rating_pred")["recipe_id"].tolist()
-        hits = len(set(pred_items) & set(liked))
-        precisions.append(hits / k)
-    return np.mean(precisions) if precisions else np.nan
+# Same user_id
+common_users = set(pred_df["user_id"]).intersection(set(test_df["user_id"]))
 
-# Recall@K
-def recall_at_k(pred_df, test_df, k):
-    recalls = []
-    for uid in test_df["user_id"].unique():
-        liked = test_df[(test_df["user_id"] == uid) & (test_df["rating_true"] >= 4)]["recipe_id"].tolist()
-        if not liked:
-            continue
-        pred_items = pred_df[pred_df["user_id"] == uid].nlargest(k, "rating_pred")["recipe_id"].tolist()
-        hits = len(set(pred_items) & set(liked))
-        recalls.append(hits / len(liked))
-    return np.mean(recalls) if recalls else np.nan
+pred_df = pred_df[pred_df["user_id"].isin(common_users)]
+test_df = test_df[test_df["user_id"].isin(common_users)]
+print("\nCommon users retained: ", len(common_users))
 
-# nDCG@K
-def ndcg_at_k(pred_df, test_df, k):
-    ndcgs = []
-    for uid in test_df["user_id"].unique():
-        user_pred = pred_df[pred_df["user_id"] == uid].nlargest(k, "rating_pred")
-        user_true = test_df[(test_df["user_id"] == uid) & (test_df["rating_true"] >= 4)]["recipe_id"].tolist()
-        if not len(user_true):
+# === Vectorized Evaluation (Precision, Recall, nDCG, Hit) ===
+def get_topk(pred_df, k):
+    """Return top-k prediction results per user"""
+    return (
+        pred_df.sort_values(["user_id", "rating_pred"], ascending=[True, False])
+        .groupby("user_id")
+        .head(k)[["user_id", "recipe_id"]]
+    )
+
+def ranking_metrics(pred_df, test_df, k=10):
+    liked_df = test_df[test_df["rating_true"] >= 4][["user_id", "recipe_id"]]
+    liked_dict = liked_df.groupby("user_id")["recipe_id"].apply(set).to_dict()
+    topk_df = get_topk(pred_df, k)
+
+    hits, precisions, recalls, ndcgs = [], [], [], []
+    for uid, group in topk_df.groupby("user_id"):
+        liked_items = liked_dict.get(uid, set())
+        if not liked_items:
             continue
-        gains = [1 / np.log2(i + 2) if row["recipe_id"] in user_true else 0 for i, row in user_pred.iterrows()]
+        rec_items = list(group["recipe_id"])
+        inter = set(rec_items) & liked_items
+        n_hit = len(inter)
+        hits.append(1 if n_hit > 0 else 0)
+        precisions.append(n_hit / k)
+        recalls.append(n_hit / len(liked_items))
+
+        # nDCG
+        gains = [1 / np.log2(i + 2) if r in liked_items else 0 for i, r in enumerate(rec_items)]
         dcg = np.sum(gains)
-        idcg = np.sum([1 / np.log2(i + 2) for i in range(min(k, len(user_true)))])
+        idcg = np.sum([1 / np.log2(i + 2) for i in range(min(k, len(liked_items)))])
         ndcgs.append(dcg / idcg if idcg > 0 else 0)
-    return np.mean(ndcgs) if ndcgs else np.nan
 
-# HitRate@K (Evaluation)
-def hit_rate_at_k(merged_df, test_df, k):
-    hits, evaluated = 0, 0
-    for uid in test_df["user_id"].unique():
-        liked = test_df[(test_df["user_id"] == uid) & (test_df["rating_true"] >= 4)]["recipe_id"].tolist()
-        if not liked:
-            continue
-        pred_items = merged_df[merged_df["user_id"] == uid].nlargest(k, "rating_pred")["recipe_id"].tolist()
-        evaluated += 1
-        if any(item in pred_items for item in liked):
-            hits += 1
-    return hits / evaluated if evaluated > 0 else 0
+    return {
+        "HitRate": np.mean(hits) if hits else 0,
+        "Precision": np.mean(precisions) if precisions else 0,
+        "Recall": np.mean(recalls) if recalls else 0,
+        "nDCG": np.mean(ndcgs) if ndcgs else 0,
+    }
 
 # Evaluate across different K values
 metrics = []
 for k in [5, 10, 20, 50]:
-    prec = precision_at_k(pred_df, test_df, k)
-    rec = recall_at_k(pred_df, test_df, k)
-    ndcg = ndcg_at_k(pred_df, test_df, k)
-    hit = hit_rate_at_k(pred_df, test_df, k)
-    metrics.append((k, prec, rec, ndcg, hit))
+    scores = ranking_metrics(pred_df, test_df, k)
+    metrics.append((k, scores["Precision"], scores["Recall"], scores["nDCG"], scores["HitRate"]))
 
 eval_df = pd.DataFrame(metrics, columns=["K", "Precision", "Recall", "nDCG", "HitRate"])
-print("Ranking-based Evaluation Results: \n", eval_df.round(4))
+print("\nRanking-based Evaluation Results: \n", eval_df.round(4))
 
 # Save results
 eval_df.to_csv("evaluation_ranking.csv", index=False)
@@ -90,7 +81,6 @@ plt.figure(figsize=(8,5))
 for col in ["Precision", "Recall", "nDCG", "HitRate"]:
     plt.scatter(eval_df["K"], eval_df[col], label=f"{col}@K")
     plt.plot(eval_df["K"], eval_df[col], linestyle="--", alpha=0.5)
-
 plt.xlabel("K (Top-N)")
 plt.ylabel("Score")
 plt.title("Hybrid Model Performance (Ranking-based)")
