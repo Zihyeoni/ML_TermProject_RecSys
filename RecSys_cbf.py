@@ -54,6 +54,10 @@ for uid in train_df["user_id"].unique():
 cbf_df = pd.DataFrame(cbf_results, columns=["user_id", "recipe_id", "cbf_score"])
 cbf_df["cbf_score"] = cbf_df["cbf_score"].clip(0, 1)
 
+# Normalizing CBF score
+scaler = MinMaxScaler()
+cbf_df["cbf_normalized_score"] = scaler.fit_transform(cbf_df[["cbf_score"]])
+
 # Save CBF scores data
 cbf_df.to_csv("cbf_scores.csv", index=False)
-print("Saved: cbf_scores.csv")
+print("\nSaved: cbf_scores.csv")
